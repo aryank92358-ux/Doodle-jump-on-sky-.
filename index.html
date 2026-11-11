@@ -1,0 +1,249 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Doodle Jump</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#172238;display:flex;justify-content:center;align-items:center;height:100dvh;font-family:Arial}
+#game{position:relative;width:min(100vw,420px);height:min(100dvh,790px)}
+canvas{width:100%;height:100%;display:block;touch-action:none}
+#menu{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0005;color:white;text-align:center}
+#menu h1{font-size:38px;text-shadow:2px 3px #267a42}
+#menu button{background:#26a64a;color:white;border:0;border-radius:15px;padding:18px 45px;font-size:23px;font-weight:bold}
+#menu p{font-size:16px}
+#controls{position:absolute;bottom:15px;left:0;right:0;display:flex;justify-content:space-between;padding:0 15px;pointer-events:none}
+.ctrl{pointer-events:auto;width:85px;height:65px;border:0;border-radius:15px;background:#ffffff99;font-size:30px}
+#fire{font-size:20px}
+</style>
+</head>
+<body>
+<div id="game">
+<canvas id="c" width="400" height="750"></canvas>
+<div id="menu">
+<h1>DOODLE JUMP</h1>
+<p>Jump higher and collect coins!</p>
+<button id="start">START GAME</button>
+<p>Use arrow keys or touch controls</p>
+</div>
+<div id="controls">
+<button class="ctrl" id="left">◀</button>
+<button class="ctrl" id="fire">FIRE</button>
+<button class="ctrl" id="right">▶</button>
+</div>
+</div>
+<script>
+const c=document.getElementById("c"),ctx=c.getContext("2d");
+const menu=document.getElementById("menu");
+const W=400,H=750;
+let p,platforms=[],coins=[],enemies=[],bullets=[];
+let cam=0,highest=0,score=0,money=0,best=Number(localStorage.doodleBest||0);
+let state="menu",L=false,R=false;
+let audio=null,musicTimer=null,sound=true,music=true,note=0,last=0;
+
+function audioReady(){
+ try{
+  if(!audio)audio=new(window.AudioContext||window.webkitAudioContext)();
+  if(audio.state==="suspended")audio.resume();
+  if(music&&sound)startMusic();
+ }catch(e){}
+}
+function beep(f,d=.12,type="sine",vol=.05,end){
+ if(!audio||!sound)return;
+ let o=audio.createOscillator(),a=audio.createGain();
+ o.type=type;o.frequency.value=f;
+ if(end)o.frequency.exponentialRampToValueAtTime(end,audio.currentTime+d);
+ a.gain.setValueAtTime(vol,audio.currentTime);
+ a.gain.exponentialRampToValueAtTime(.001,audio.currentTime+d);
+ o.connect(a);a.connect(audio.destination);o.start();o.stop(audio.currentTime+d);
+}
+function startMusic(){
+ if(musicTimer||!audio||!sound||!music)return;
+ let ns=[523,659,784,659,587,698,880,698];
+ musicTimer=setInterval(()=>{if(state==="play")beep(ns[note++%8],.2,"triangle",.014)},260);
+}
+function stopMusic(){clearInterval(musicTimer);musicTimer=null}
+function addPlatform(y,first=false){
+ let r=Math.random();
+ let type=first?"normal":r<.1?"spring":r<.23?"moving":r<.31?"break":"normal";
+ let a={x:first?145:Math.random()*320+10,y,w:first?110:65,h:13,type,dir:1,dead:false};
+ platforms.push(a);
+ if(!first&&Math.random()<.28)coins.push({x:a.x+32,y:y-35,got:false});
+ if(!first&&score>250&&Math.random()<.07)enemies.push({x:Math.random()*350,y:y-80,dead:false,dir:1});
+}
+function startGame(){
+ audioReady();
+ platforms=[];coins=[];enemies=[];bullets=[];
+ cam=0;score=0;money=0;highest=680;
+ p={x:181,y:620,w:38,h:42,vx:0,vy:-10,jet:0,face:1};
+ addPlatform(680,true);
+ for(let y=610;y>-900;y-=70)addPlatform(y);
+ state="play";
+ menu.style.display="none";
+ last=performance.now();
+}
+document.getElementById("start").addEventListener("click",startGame);
+document.getElementById("start").addEventListener("touchend",e=>{e.preventDefault();startGame()});
+
+function box(x,y,w,h,col,r=5){
+ ctx.fillStyle=col;ctx.beginPath();ctx.roundRect(x,y,w,h,r);ctx.fill();
+}
+function background(){
+ let gr=ctx.createLinearGradient(0,0,0,H);
+ gr.addColorStop(0,"#55c9fa");gr.addColorStop(1,"#eafcff");
+ ctx.fillStyle=gr;ctx.fillRect(0,0,W,H);
+ for(let i=0;i<8;i++){
+  let x=(i*100+20)%420,y=(i*137-cam*.2)%850;
+  if(y<0)y+=850;
+  ctx.fillStyle="#ffffffaa";ctx.beginPath();
+  ctx.arc(x,y,17,0,7);ctx.arc(x+20,y-7,21,0,7);ctx.arc(x+40,y,15,0,7);ctx.fill();
+ }
+}
+function drawPlatform(a){
+ let y=a.y-cam;if(y<-30||y>H+30)return;
+ box(a.x,y,a.w,a.h,{normal:"#31a94b",moving:"#e9a42b",break:"#a8794b",spring:"#229bd1"}[a.type],6);
+ box(a.x+5,y+2,a.w-10,3,"#ffffff88",2);
+ if(a.type==="spring"){
+  ctx.strokeStyle="white";ctx.lineWidth=3;ctx.beginPath();
+  ctx.moveTo(a.x+32,y);ctx.lineTo(a.x+25,y-8);ctx.lineTo(a.x+38,y-14);ctx.lineTo(a.x+32,y-20);ctx.stroke();
+ }
+}
+function drawPlayer(){
+ let y=p.y-cam;
+ ctx.save();ctx.translate(p.x+19,y+20);
+ if(p.face<0)ctx.scale(-1,1);
+ box(-19,-20,38,40,"#45b84a",12);
+ box(-13,-11,10,13,"white",4);box(4,-11,10,13,"white",4);
+ box(-9,-7,4,7,"#172b28",2);box(8,-7,4,7,"#172b28",2);
+ box(-15,15,12,7,"#237b35",3);box(5,15,12,7,"#237b35",3);
+ if(p.jet>0){box(-25,-5,9,22,"#777");ctx.fillStyle="orange";ctx.fillRect(-25,17,9,20)}
+ ctx.restore();
+}
+function drawEnemy(e){
+ let y=e.y-cam;
+ ctx.fillStyle="#e84c5d";ctx.beginPath();ctx.arc(e.x+17,y+17,17,0,7);ctx.fill();
+ box(e.x+7,y+8,7,9,"white");box(e.x+21,y+8,7,9,"white");
+}
+function drawCoin(a){
+ if(a.got)return;
+ let y=a.y-cam;
+ ctx.fillStyle="#ffcc22";ctx.beginPath();ctx.arc(a.x,y,10,0,7);ctx.fill();
+ ctx.strokeStyle="#c47b00";ctx.lineWidth=3;ctx.stroke();
+}
+function drawUI(){
+ box(8,8,150,65,"#ffffffdd",8);
+ ctx.fillStyle="#17364a";ctx.font="bold 18px Arial";
+ ctx.fillText("SCORE: "+score,17,34);
+ ctx.fillText("COINS: "+money,17,59);
+ ctx.font="bold 15px Arial";ctx.fillText("BEST: "+best,290,27);
+}
+function draw(){
+ background();
+ platforms.forEach(drawPlatform);
+ coins.forEach(drawCoin);
+ enemies.forEach(drawEnemy);
+ bullets.forEach(b=>{ctx.fillStyle="yellow";ctx.beginPath();ctx.arc(b.x,b.y-cam,5,0,7);ctx.fill()});
+ if(p)drawPlayer();
+ if(state==="play")drawUI();
+ if(state==="over"){
+  ctx.fillStyle="#17364a";ctx.textAlign="center";
+  ctx.font="bold 40px Arial";ctx.fillText("GAME OVER",200,300);
+  ctx.font="22px Arial";ctx.fillText("Score: "+score,200,345);
+  ctx.fillText("Tap PLAY AGAIN",200,400);
+  ctx.textAlign="left";
+ }
+}
+function finish(){
+ if(state!=="play")return;
+ state="over";best=Math.max(best,score);
+ localStorage.doodleBest=best;stopMusic();
+ beep(180,.4,"triangle",.08,70);
+ menu.style.display="flex";
+ menu.querySelector("h1").textContent="GAME OVER";
+ menu.querySelector("p").textContent="Your score: "+score;
+ document.getElementById("start").textContent="PLAY AGAIN";
+}
+function update(dt){
+ if(state!=="play")return;
+ if(L){p.vx=-5;p.face=-1}
+ else if(R){p.vx=5;p.face=1}
+ else p.vx*=.82;
+ p.x+=p.vx;
+ if(p.x>W)p.x=-p.w;
+ if(p.x<-p.w)p.x=W;
+ if(p.jet>0){p.jet-=dt;p.vy=-7}
+ else p.vy+=.27;
+ let old=p.y;
+ p.y+=p.vy;
+ for(let a of platforms){
+  if(a.type==="moving"){
+   a.x+=a.dir*1.5;
+   if(a.x<0||a.x+a.w>W)a.dir*=-1;
+  }
+  if(p.vy>0&&old+p.h<=a.y+4&&p.y+p.h>=a.y&&p.x+p.w>a.x&&p.x<a.x+a.w){
+   if(a.type==="break"){a.dead=true;beep(130,.1,"square")}
+   else if(a.type==="spring"){p.vy=-18;beep(850,.25,"sawtooth",.07,1200)}
+   else{p.vy=-11;beep(400,.13,"triangle",.07,700)}
+  }
+ }
+ platforms=platforms.filter(a=>!a.dead&&a.y-cam<H+60);
+ for(let a of coins){
+  if(!a.got&&Math.abs(p.x+19-a.x)<24&&Math.abs(p.y+20-a.y)<28){
+   a.got=true;money++;beep(900,.12,"sine",.07,1300);
+  }
+ }
+ coins=coins.filter(a=>!a.got&&a.y-cam<H+50);
+ for(let e of enemies){
+  e.x+=e.dir*1.2;
+  if(e.x<0||e.x>365)e.dir*=-1;
+  if(p.x+30>e.x&&p.x<e.x+34&&p.y+35>e.y&&p.y<e.y+34)finish();
+ }
+ for(let b of bullets){
+  b.y-=9;
+  for(let e of enemies)if(!e.dead&&Math.abs(b.x-e.x-17)<22&&Math.abs(b.y-e.y)<22){e.dead=true;b.dead=true;beep(320,.1,"square")}
+ }
+ bullets=bullets.filter(b=>!b.dead&&b.y>cam-50);
+ enemies=enemies.filter(e=>!e.dead&&e.y-cam<H+100);
+ if(p.y-cam<290){
+  let d=290-(p.y-cam);cam-=d;p.y+=d;
+  score=Math.max(score,Math.floor(-cam));
+ }
+ while(highest>cam-850){
+  highest-=75+Math.random()*15;addPlatform(highest);
+ }
+ if(p.y-cam>H+50)finish();
+}
+function shoot(){
+ if(state!=="play")return;
+ bullets.push({x:p.x+19,y:p.y});
+ beep(650,.08,"square",.04,250);
+}
+function loop(t){
+ let dt=Math.min((t-last)/16.67||1,2);last=t;
+ update(dt);draw();requestAnimationFrame(loop);
+}
+function bindButton(id,down,up){
+ let el=document.getElementById(id);
+ el.addEventListener("pointerdown",e=>{e.preventDefault();down()});
+ el.addEventListener("pointerup",e=>{e.preventDefault();up()});
+ el.addEventListener("pointerleave",up);
+ el.addEventListener("pointercancel",up);
+}
+bindButton("left",()=>L=true,()=>L=false);
+bindButton("right",()=>R=true,()=>R=false);
+bindButton("fire",shoot,()=>{});
+document.addEventListener("keydown",e=>{
+ if(e.key==="ArrowLeft"||e.key==="a")L=true;
+ if(e.key==="ArrowRight"||e.key==="d")R=true;
+ if(e.key===" "){e.preventDefault();shoot()}
+});
+document.addEventListener("keyup",e=>{
+ if(e.key==="ArrowLeft"||e.key==="a")L=false;
+ if(e.key==="ArrowRight"||e.key==="d")R=false;
+});
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
